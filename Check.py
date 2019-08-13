@@ -3,7 +3,23 @@
 
 #Author: @JMVergara
 
+'''
+Program that extract necessary information and automatize processes from SIESTA software outputs.
+
+The program do the process for all files with ".out" extension that are in the same folder of the script
+
+How to use:
+	$python Check.py
+
+outputs:
+Note: here 'File' is the name of the ".out" file. example: if BPNT1414.out File = BPNT1414
+
+	Status.csv file: Show iformation about the correct termination of job in SIESTA: OK, FAILED
+	File-R.fdf file: replace relaxed coordinates in fdf input file for future calculations  
+'''
+
 import os
+import pandas as pd
 from itertools import dropwhile,takewhile   
  
 def NotBlockStartRelaxedCoor(line):
@@ -18,9 +34,41 @@ def NotBlockStartUnitCell(line):
 def NotBlockEnd(line):
 	return not line.startswith('\n')
 
+def NotBlockStartInputCoordinates(line):
+	return not line.startswith('%block AtomicCoordinatesAndAtomicSpecies')
+
+def NotBlockInputEnd(line):
+	return not line.startswith('%endblock AtomicCoordinatesAndAtomicSpecies')
+
+def NotBlockStartInputUnit(line):
+	return not line.startswith('%block LatticeVectors')
+
+def NotBlockUnitCellEnd(line):
+	return not line.startswith('%endblock LatticeVectors')
+
 def WriteLines(lines,outputFile):
+	'''Write lines in outputfile
+	input: 
+		lines = lines of text or numbers that you want to write
+		outputFile = file where the lines will be written'''
+
 	for line in lines:
 		outputFile.write(line)
+
+def WriteFindCoorFile(data):
+	blockInputCoor = dropwhile(NotBlockStartInputCoordinates, data)
+	next(blockInputCoor)
+	block=list(takewhile(NotBlockInputEnd, blockInputCoor))
+	findFile = open('findCoor.txt',"w")
+	WriteLines(block,findFile)
+
+def WriteFindUnitFile(data):   
+	blockUnitCell = dropwhile(NotBlockStartInputUnit, data)
+	next(blockUnitCell)
+	block=list(takewhile(NotBlockUnitCellEnd, blockUnitCell))
+	findFile = open('findUnit.txt',"w")
+	WriteLines(block,findFile)
+	
 
 def GetInputInfo(inputFile,valueToObtain):
 	with open(inputFile) as inputFile:
@@ -32,35 +80,28 @@ def GetInputInfo(inputFile,valueToObtain):
 				break
 	return inputLine
 
-def GetRelaxedCoor(finalFile,file):
+def GetRelaxedCoor(file):
     blockRelaxedCoor = dropwhile(NotBlockStartRelaxedCoor, file)
     next(blockRelaxedCoor)
     block=list(takewhile(NotBlockEnd, blockRelaxedCoor))
-    block.insert(0,'outcoor: Relaxed atomic coordinates (Ang):\n')
-    block.append('\n')
-    WriteLines(block,finalFile)
-    print('Getting Relaxed Coordinates.....  Done\n')
+    replaceFile = open('replaceCoor.txt',"w")
+    WriteLines(block,replaceFile)
 
-def GetUnRelaxedCoor(finalFile,file):
-    blockUnRelaxedCoor = dropwhile(NotBlockStartUnRelaxedCoor, file)
-    next(blockUnRelaxedCoor)
-    block=list(takewhile(NotBlockEnd, blockUnRelaxedCoor))
-    block.insert(0,'outcoor: Final (UNRELAXED) atomic coordinates (Ang): \n')
-    block.append('\n')
-    WriteLines(block,finalFile)
-    print('Getting UNRELAXED Coordinates.....  Done\n')
+def GetUnRelaxedCoor(file):
+	blockUnRelaxedCoor = dropwhile(NotBlockStartUnRelaxedCoor, file)
+	next(blockUnRelaxedCoor)
+	block=list(takewhile(NotBlockEnd, blockUnRelaxedCoor))
+	replaceFile = open('replaceCoor.txt',"w")
+	WriteLines(block,replaceFile)
 
-def GetUnitCell(finalFile,file):
+def GetUnitCell(file):
 	blockUnitCell = dropwhile(NotBlockStartUnitCell, file)
 	next(blockUnitCell)
 	block=list(takewhile(NotBlockEnd, blockUnitCell))
-	del(blockUnitCell)
-	block.insert(0,'outcell: Unit cell vectors (Ang):\n')
-	block.append('\n')
-	WriteLines(block,finalFile)
-	print('Getting UnitCell..... Done.\n')
+	replaceFile = open('replaceUnit.txt',"w")
+	WriteLines(block,replaceFile)
 
-def CheckScf(inputFile,finalFile,file):
+def CheckScf(inputFile,file):
 	lines = iter(file)
 	while True:
 		try:
@@ -69,20 +110,22 @@ def CheckScf(inputFile,finalFile,file):
 			break
 		if line.startswith( 'SCF cycle converged after', 0, 30 ):
 			lastScf = line
-	splitLastScf = lastScf.split(' ')	
-	numIter = int(splitLastScf[7])
+	splitLastScf = lastScf.split(' ')
+	try:
+		numIter = int(splitLastScf[7])
+	except:
+		numIter = int(splitLastScf[6])
 	maxSCF = GetInputInfo(inputFile,'MaxSCFIterations').split('\n')
 	maxSCF = int(maxSCF[0].split(' ')[-1])
 
-	if numIter <= maxSCF:
-		scfResult = 'SCF cycle converged after %d and Max SCF iterations are %d          CORRECT\n'%(numIter,maxSCF) 
+	if numIter < maxSCF:
+		status = True
 	else:
-		scfResult = 'SCF cycle converged after %d and Max SCF iterations are %d          INCORRECT\n'%(numIter,maxSCF)
+		status = False
 
-	WriteLines(list(scfResult),finalFile)
-	print('Checking SCF iterations ........ Done.\n')
+	return status
 
-def CheckMaxForceTol(inputFile,finalFile,file):
+def CheckMaxForceTol(inputFile,file):
 	lines = iter(file)
 	while True:
 		try:
@@ -97,15 +140,14 @@ def CheckMaxForceTol(inputFile,finalFile,file):
 	maxForceTol = GetInputInfo(inputFile,'MD.MaxForceTol').split('\n')
 	maxForceTol = float(maxForceTol[0].split(' ')[4])
 
-	if numLastForceTol <= maxForceTol:
-		forceTolResult = 'Max constrained converged after %f and Max force tol are %f          CORRECT\n'%(numLastForceTol,maxForceTol) 
+	if numLastForceTol < maxForceTol:
+		status =  True 
 	else:
-		forceTolResult = 'Max constrained converged after %f and Max force tol are %f          INCORRECT\n'%(numLastForceTol,maxForceTol)
+		status = False
 
-	WriteLines(list(forceTolResult),finalFile)
-	print('Checking Force Tol ........ Done.\n')
+	return status
 
-def CheckCGsteps(inputFile,finalFile,file):
+def CheckCGsteps(inputFile,file):
 	lines = iter(file)
 	while True:
 		try:
@@ -121,15 +163,14 @@ def CheckCGsteps(inputFile,finalFile,file):
 	maxCGsteps = GetInputInfo(inputFile,'MD.NumCGsteps').split('\n')
 	maxCGsteps = int(maxCGsteps[0].split(' ')[-1])
 
-	if numCGsteps <= maxCGsteps:
-		CGstepsResult = 'Input converged after %d CGsteps and Max CGsteps are %d          CORRECT\n'%(numCGsteps,maxCGsteps) 
+	if numCGsteps < maxCGsteps:
+		status = True
 	else:
-		CGstepsResult = 'Input converged after %d CGsteps and Max CGsteps are %d          INCORRECT\n'%(numCGsteps,maxCGsteps)
+		status = True
 
-	WriteLines(list(CGstepsResult),finalFile)
-	print('Checking CGsteps ........ Done.\n')
+	return status
 
-def GetTotalEnergy(finalFile,file):
+def GetTotalEnergy(file):
 	lines = iter(file)
 	while True:
 		try:
@@ -140,14 +181,13 @@ def GetTotalEnergy(finalFile,file):
 			totalEnergy = line
 	split = totalEnergy.split('\n')
 	totalEnergy = float(split[0].split(' ')[-1])
-	result = list("Total Energy      %f\n"%totalEnergy)
-	WriteLines(result,finalFile)
-	print("Getting Total Energy....... Done.\n")
+	return totalEnergy
 
 def FindFilenames(pathToDir, suffix=".out"): 
-	"""Buscamos todos los archivos .out que se encuentran en un directorio
-		input: Carpeta donde estan los archivos
-		output: lista de todos los archivos.out encontrados"""
+	"""Search all the .out files found in a directory.
+
+		input: Folder where the files are
+		output: list of all files found out"""
 	filenames = os.listdir(pathToDir) 
 	filenamesWithSuffix = [ filename for filename in filenames if filename.endswith(suffix) ] 	
 	filenamesWithoutSuffix = []
@@ -156,35 +196,131 @@ def FindFilenames(pathToDir, suffix=".out"):
 
 	return filenamesWithoutSuffix
 
+def ReplaceCoordinatesInputFile(inputFile,RelaxFile):
+	RelaxFiletemp = RelaxFile+"tmp.fdf"
+	RelaxFile = RelaxFile+"-R.fdf"
+	with open(inputFile) as data:
+		WriteFindCoorFile(data)
+	with open(inputFile) as data:
+		WriteFindUnitFile(data)
+
+	findLines = open('findCoor.txt').read().split('\n')
+	replaceLines = open('replaceCoor.txt').read().split('\n')
+	findReplace = dict(zip(findLines, replaceLines))
+	with open(inputFile) as data:
+		with open(RelaxFiletemp,"w") as newData:
+			for line in data:
+				for key in findReplace:
+					if key in line:
+						line = line.replace(key, findReplace[key])
+				newData.write(line)
+
+	findLines = open('findUnit.txt').read().split('\n')
+	replaceLines = open('replaceUnit.txt').read().split('\n')
+	findReplace = dict(zip(findLines, replaceLines))
+	with open(RelaxFiletemp) as data:
+		with open(RelaxFile,"w") as newData:
+			for line in data:
+				for key in findReplace:
+					if key in line:
+						line = line.replace(key, findReplace[key])
+				newData.write(line)
+	
+def GetTypeFile(outputfile):
+	maxCGsteps = GetInputInfo(outputfile,'MD.NumCGsteps').split('\n')
+	maxCGsteps = int(maxCGsteps[0].split(' ')[-1])
+	if maxCGsteps > 0:
+		typeFile = 'Relaxed'
+	else:
+		typeFile = 'Result'
+	return typeFile
+
+def CheckIfFileIsEmpty(path):
+	try:
+		return os.stat(path).st_size==0
+	except:
+		return True
+
+def GetFerminEnergy(file):
+	lines = iter(file)
+	while True:
+		try:
+			line = next(lines)
+		except:
+			break
+		if line.startswith( '   scf:', 0, 7 ):
+			lastScf = line
+	splitLastScf = lastScf.split(' ')[-1]
+	ferminEnergy = splitLastScf.split('\n')[0]
+	return ferminEnergy
+	
 def CheckFile(filename):
+
 	print('=======================================')
 	print('Checking '+filename+'..................')
-	finalname = filename +'.txt'
 	outputFile = filename + '.out'
-	inputFile = filename + '.out' 
-	finalFile = open(finalname, "w")		
-	with open(outputFile) as file:
-		GetTotalEnergy(finalFile,file)
-	with open(outputFile) as file:
-		CheckCGsteps(inputFile,finalFile,file)
-	with open(outputFile) as file:
-		CheckMaxForceTol(inputFile,finalFile,file)
-	with open(outputFile) as file:
-		CheckScf(inputFile,finalFile,file)
-	with open(outputFile) as file:
-		GetUnitCell(finalFile,file)
-	flag = False
-	with open(outputFile) as file:
-		try:
-			GetRelaxedCoor(finalFile,file)
-		except StopIteration:
-			flag = True
-	if flag == True:
+	inputFile = filename + '.fdf' 
+	typeFile = GetTypeFile(outputFile)
+	if typeFile == 'Relaxed':		
 		with open(outputFile) as file:
-			GetUnRelaxedCoor(finalFile,file)
+			totalEnergy = GetTotalEnergy(file)
+		with open(outputFile) as file:
+			statusCG = CheckCGsteps(inputFile,file)
+		with open(outputFile) as file:
+			statusForceTol = CheckMaxForceTol(inputFile,file)
+		with open(outputFile) as file:
+			statusScf = CheckScf(inputFile,file)
+		with open(outputFile) as file:
+			GetUnitCell(file)
+		flag = False
+		with open(outputFile) as file:
+			try:
+				GetRelaxedCoor(file)
+			except StopIteration:
+				flag = True
+		if flag == True:
+			with open(outputFile) as file:
+				GetUnRelaxedCoor(file)
+		statusList = [statusCG,statusForceTol,statusScf]
+		if False in statusList:
+			fileStatus = 'FAILED'
+		else:
+			fileStatus = 'OK'
+	
+		info = [filename,totalEnergy,fileStatus,'NA']
+		ReplaceCoordinatesInputFile(inputFile,filename)
 
-	finalFile.close()
+		os.remove('findCoor.txt')
+		os.remove('replaceCoor.txt')	
+		os.remove('findUnit.txt')
+		os.remove('replaceUnit.txt')
+		os.remove(filename+"tmp.fdf")
+	else:
+		filenameAux = filename.split('-R')[0]
+		bandsFile = filenameAux + '.dat'
+		DOSFile = filenameAux + '.DOS'
+		with open(outputFile) as file:
+			totalEnergy = GetTotalEnergy(file)
+
+		with open(outputFile) as file:
+			ferminEnergy = GetFerminEnergy(file)
+		if CheckIfFileIsEmpty(bandsFile) == False and CheckIfFileIsEmpty(DOSFile) == False:
+			fileStatus='OK'
+		else:
+			fileStatus='False'
+			
+		info = [filename,totalEnergy,fileStatus,ferminEnergy]
+
+	return info	
+
+
+
 
 filenames = FindFilenames('./')
+Data = []
 for filename in filenames:
-	CheckFile(filename)
+	info = CheckFile(filename)
+	Data += [info]
+
+infoFile = pd.DataFrame(Data,columns=['System','TotalEnergy','Status','FerminEnergy'])
+infoFile.to_csv("Status.csv")
